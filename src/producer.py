@@ -1,0 +1,31 @@
+import time
+from kafka import KafkaAdminClient, KafkaProducer
+from kafka.admin import NewTopic
+from kafka.errors import UnknownTopicOrPartitionError,TopicAlreadyExistsError
+import weather
+from report_pb2 import *
+
+broker = 'localhost:9092'
+admin_client = KafkaAdminClient(bootstrap_servers=[broker])
+
+try:
+    admin_client.delete_topics(["temperatures"])
+    print("Deleted topics successfully")
+except UnknownTopicOrPartitionError:
+    print("Cannot delete topic/s (may not exist yet)")
+
+time.sleep(5) # Deletion sometimes takes a while to reflect
+
+try:
+    admin_client.create_topics([NewTopic("temperatures", num_partitions=4, replication_factor=1)])
+
+except TopicAlreadyExistsError:
+    print("temperatures already exist")
+
+producer = KafkaProducer(bootstrap_servers=[broker],acks="all",retries=10)
+
+for date, degrees, station_id in weather.get_next_weather(delay_sec=0.1):
+    key = bytes(station_id, "utf-8")
+    value = Report(date=date, degrees=degrees, station_id=station_id).SerializeToString()
+    producer.send(topic="temperatures",value=value,key=key)
+    
