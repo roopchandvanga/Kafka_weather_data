@@ -1,21 +1,64 @@
-from kafka import TopicPartition, KafkaConsumer
-from report_pb2 import Report
+from kafka import KafkaConsumer
+from kafka import TopicPartition
+from report_pb2 import *
+import json
+import os
+import sys
 
 broker = "localhost:9092"
 consumer = KafkaConsumer(bootstrap_servers=[broker])
-consumer.subscribe(["temperatures"])
-#print(consumer.assignment())
-#print(consumer.partitions_for_topic("temperatures"))
-partitions=[0,1]
-batch = consumer.poll(1000)
+# partitions = [0, 2]
+partitions = sys.argv[1:]
+# print(partitions)
+
+consumer.assign([TopicPartition("temperatures", int(p)) for p in partitions])
+
+json_report = {"offset": 0}
+for part in partitions:
+    json_object = json.dumps(json_report, indent=4)
+
+    # Create empty json files if they don't exist
+    if not os.path.exists(f'/src/partition-{part}.json'):
+        # print(f"File /src/partition-{part}.json does not exist.")
+        with open(f"/src/partition-{part}.json", "w") as outfile:
+            outfile.write(json_object)
+    else:
+        for tp in consumer.assignment():
+            # Read data from json file
+            with open(f'/src/partition-{tp[1]}.json') as json_file:
+                json_report = json.load(json_file)
+            consumer.seek(tp, json_report["offset"])
+
+while True:
+    batch = consumer.poll(1000)
+    # print(batch)
     for tp, messages in batch.items():
-        partition = tp[1]
         for msg in messages:
-            report = Report.FromString(msg.value)
-            output = {
-                "station_id": report.station_id,
-                "date": report.date,
-                "degrees": report.degrees,
-                "partition": partition
-            }
-            print(output)
+            msg = Report.FromString(msg.value)
+
+            # Get Partition
+            part = tp[1]
+
+            # Read data from json file
+            with open(f'/src/partition-{part}.json') as json_file:
+                json_report = json.load(json_file)
+
+            # Get offset
+            json_report["offset"] = consumer.position(tp)
+
+            # Logic to compute statistics
+            if not msg.station_id in json_report:
+                json_report[msg.station_id] = {"count": 0, "sum": 0, "start": msg.date}
+            json_report[msg.station_id]["count"] += 1
+            json_report[msg.station_id]["sum"] += msg.degrees
+            json_report[msg.station_id]["avg"] = json_report[msg.station_id]["sum"]/json_report[msg.station_id]["count"]
+            json_report[msg.station_id]["end"] = msg.date
+            print(json_report)
+
+            json_object = json.dumps(json_report, indent=4)
+
+            # Write data to json file
+            with open(f"/src/partition-{part}.json.tmp", "w") as outfile:
+                outfile.write(json_object)
+                os.rename(f"/src/partition-{part}.json.tmp", f"/src/partition-{part}.json")
+
